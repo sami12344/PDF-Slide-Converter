@@ -1,67 +1,103 @@
+import os
 import io
 from PIL import Image
 from pdf2image import convert_from_path
 import img2pdf
 
-def convert_slides(input_pdf, output_pdf, dpi=300):
-    # Convert PDF to images
-    images = convert_from_path(input_pdf, dpi=dpi)
-    
-    # A4 portrait dimensions at 300 DPI
-    a4_width = 2480    # 8.27" * 300
-    a4_height = 3508   # 11.69" * 300
-    
+def process_slides_to_pdf(slides, output_path, dpi=300):
+    """Process a list of slides into a PDF with 3 slides per A4 page"""
+    A4_WIDTH, A4_HEIGHT = 2480, 3508  # 8.27" x 11.69" @300DPI
+    SLIDES_PER_PAGE = 3
     output_pages = []
-    
-    for i in range(0, len(images), 3):
-        group = images[i:i+3]
-        composite = Image.new('RGB', (a4_width, a4_height), 'white')
-        y_position = 0
+
+    for i in range(0, len(slides), SLIDES_PER_PAGE):
+        page = Image.new('RGB', (A4_WIDTH, A4_HEIGHT), (255, 255, 255))
+        y_cursor = 0
         
-        # Calculate target height per slide (exactly 1/3 of A4 height)
-        slide_height = a4_height // 3
+        for slide in slides[i:i+SLIDES_PER_PAGE]:
+            if slide.mode == 'RGBA':
+                slide = slide.convert('RGB')
+            
+            orig_width, orig_height = slide.size
+            target_height = A4_HEIGHT // SLIDES_PER_PAGE
+            
+            # Calculate scaling
+            scale_factor = target_height / orig_height
+            scaled_width = int(orig_width * scale_factor)
+            
+            if scaled_width > A4_WIDTH:
+                scale_factor = A4_WIDTH / orig_width
+                scaled_width = A4_WIDTH
+                target_height = int(orig_height * scale_factor)
+            
+            resized = slide.resize((scaled_width, target_height), Image.LANCZOS)
+            x_pos = (A4_WIDTH - scaled_width) // 2
+            page.paste(resized, (x_pos, y_cursor))
+            y_cursor += target_height
         
-        for img in group:
-            # Convert to RGB if needed
-            if img.mode == 'RGBA':
-                img = img.convert('RGB')
-            
-            # Calculate scaling to get exact slide height
-            original_width, original_height = img.size
-            scale_factor = slide_height / original_height
-            new_width = int(original_width * scale_factor)
-            new_height = slide_height  # Enforce exact height
-            
-            # Resize image
-            img = img.resize((new_width, new_height), Image.LANCZOS)
-            
-            # Calculate horizontal positioning
-            if new_width > a4_width:
-                # Scale down to fit width (maintains aspect ratio)
-                scale_factor = a4_width / original_width
-                new_width = a4_width
-                new_height = int(original_height * scale_factor)
-                img = img.resize((new_width, new_height), Image.LANCZOS)
-                
-            x_position = (a4_width - new_width) // 2  # Center horizontally
-            
-            # Paste image
-            composite.paste(img, (x_position, y_position))
-            y_position += new_height  # Stack vertically without spacing
-        
-        output_pages.append(composite)
-    
-    # Convert images to PDF
-    with open(output_pdf, "wb") as f:
+        output_pages.append(page)
+
+    # Save final PDF
+    with open(output_path, "wb") as f:
         images_bytes = []
-        for page in output_pages:
+        for img in output_pages:
             img_byte_arr = io.BytesIO()
-            page.save(img_byte_arr, format='JPEG', dpi=(dpi, dpi), quality=100)
+            img.save(img_byte_arr, format='JPEG', quality=95, dpi=(dpi, dpi))
             images_bytes.append(img_byte_arr.getvalue())
-        f.write(img2pdf.convert(images_bytes))
+        
+        pdf_bytes = img2pdf.convert(images_bytes, layout_fun=img2pdf.get_layout_fun(
+            (img2pdf.in_to_pt(8.27), img2pdf.in_to_pt(11.69))
+        ))
+        f.write(pdf_bytes)
+
+def main():
+    print("=== PDF Slide Merger ===")
+    print("This program will merge 3 slides per A4 page in portrait orientation")
+    
+    # Confirmation
+    if input("Are you ready to proceed? (y/n): ").lower() != 'y':
+        print("Operation cancelled.")
+        return
+
+    # Input handling
+    input_path = input("Enter path to PDF file or directory containing PDFs: ").strip()
+    if not os.path.exists(input_path):
+        print("Error: The specified path does not exist")
+        return
+
+    # Output handling
+    output_dir = input("Enter output directory path: ").strip()
+    os.makedirs(output_dir, exist_ok=True)
+    
+    output_name = input("Enter output filename (without extension): ").strip()
+    if not output_name.endswith('.pdf'):
+        output_name += '.pdf'
+    output_path = os.path.join(output_dir, output_name)
+
+    # Collect PDF files
+    pdf_files = []
+    if os.path.isfile(input_path):
+        pdf_files = [input_path]
+    else:
+        pdf_files = [os.path.join(input_path, f) 
+                    for f in os.listdir(input_path) 
+                    if f.lower().endswith('.pdf')]
+    
+    if not pdf_files:
+        print("Error: No PDF files found in the specified location")
+        return
+
+    # Process all slides
+    all_slides = []
+    for pdf_file in pdf_files:
+        print(f"Processing {os.path.basename(pdf_file)}...")
+        all_slides.extend(convert_from_path(pdf_file, dpi=300, fmt='jpeg'))
+
+    # Create output PDF
+    print(f"\nMerging {len(all_slides)} slides into {output_path}...")
+    process_slides_to_pdf(all_slides, output_path)
+    
+    print(f"Successfully created merged PDF with {len(all_slides)//3 + (1 if len(all_slides)%3 else 0)} pages")
 
 if __name__ == "__main__":
-    input_pdf = "input_slides.pdf"
-    output_pdf = "output_3up_exact.pdf"
-    convert_slides(input_pdf, output_pdf)
-    print(f"Created {output_pdf} with exact height matching A4")
+    main()
